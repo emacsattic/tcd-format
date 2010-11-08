@@ -1,9 +1,9 @@
 ;;; tcd-format.el --- view XTide .tcd tide constituent database files
 
-;; Copyright 2008, 2009 Kevin Ryde
+;; Copyright 2008, 2009, 2010 Kevin Ryde
 
 ;; Author: Kevin Ryde <user42@zip.com.au>
-;; Version: 6
+;; Version: 7
 ;; Keywords: data
 ;; URL: http://user42.tuxfamily.org/tcd-format/index.html
 ;; EmacsWiki: XTide
@@ -35,6 +35,12 @@
 ;; For more on XTide see <http://www.flaterco.com/xtide>.
 ;; And have a look at xtide.el for running within Emacs
 ;; <http://user42.tuxfamily.org/xtide/index.html>
+
+;;; Emacsen:
+
+;; Designed for Emacs 22 and up.  Works in Emacs 21 and XEmacs 21.
+;; Works in Emacs 20 if you've got either Gnus mm-util.el or APEL poe.el for
+;; make-temp-file.
 
 ;;; Install:
 
@@ -73,27 +79,60 @@
 ;; Version 4 - new home page, now as a tar+deb too
 ;; Version 5 - use pipe rather than pty for subprocess
 ;; Version 6 - delete errors window when no errors
-
-;;; Emacsen:
-
-;; Designed for Emacs 22, works in Emacs 21 and XEmacs 21.
+;; Version 7 - display errors in a different window
+;;           - use APEL poe.el for make-temp-file in emacs20
 
 ;;; Code:
 
-;; xemacs incompatibilities
+;;-----------------------------------------------------------------------------
+;; compatibility
+
 (eval-and-compile
-  (defalias 'tcd-format--make-temp-file
-    (if (eval-when-compile (fboundp 'make-temp-file))
-        'make-temp-file   ;; emacs
-      ;; xemacs21
-      (autoload 'mm-make-temp-file "mm-util") ;; from gnus
-      'mm-make-temp-file))
+  (cond ((or (eval-when-compile (fboundp 'make-temp-file))
+             (fboundp 'make-temp-file))
+         ;; emacs21 up, noticed at compile time or run time
+         (defalias 'tcd-format--make-temp-file 'make-temp-file))
+
+        ((locate-library "mm-util") ;; from gnus
+         ;; xemacs21
+         (autoload 'mm-make-temp-file "mm-util")
+         (defalias 'tcd-format--make-temp-file 'mm-make-temp-file))
+
+        ((locate-library "poe") ;; from APEL
+         ;; emacs20 with poe.el add-on
+         (require 'poe)
+         (defalias 'tcd-format--make-temp-file 'make-temp-file))
+
+        (t
+         ;; umm, dunno, hope the user can define it
+         (message "tcd-format.el: don't know where to get `make-temp-file'")
+         (defalias 'tcd-format--make-temp-file 'make-temp-file))))
+
+(eval-and-compile
   (defalias 'tcd-format--set-buffer-multibyte
     (if (eval-when-compile (fboundp 'set-buffer-multibyte))
         'set-buffer-multibyte  ;; emacs
       'identity)))             ;; not applicable in xemacs21
 
 
+;;-----------------------------------------------------------------------------
+;; generic
+
+(defun tcd-format-switch-to-buffer-other-window (buffer)
+  "Switch to display BUFFER in another window.
+If it isn't already in a window then the window is shrunk with
+`shrink-window-if-larger-than-buffer'."
+  (let ((existing-window (get-buffer-window buffer)))
+    (condition-case nil
+        ;; emacs two args
+        (switch-to-buffer-other-window buffer t) ;; no-record
+      (error
+       ;; xemacs one arg
+       (switch-to-buffer-other-window buffer)))
+    (if (not existing-window)
+        (shrink-window-if-larger-than-buffer (get-buffer-window buffer)))))
+
+;;-----------------------------------------------------------------------------
 ;;;###autoload
 (modify-coding-system-alist 'file "\\.tcd\\'" 'raw-text-unix)
 
@@ -113,6 +152,7 @@
 
 ;;;###autoload
 (defun tcd-format-encode (beg end buffer)
+  ;; checkdoc-params: (beg end buffer)
   "Sorry, cannot encode `tcd' format.
 There's no support for editing and re-writing tcd files.  It'd be
 possible, but if you're changing the data you're almost certainly
@@ -123,6 +163,7 @@ contents when you don't have the source handy."
 
 ;;;###autoload
 (defun tcd-format-decode (beg end)
+  ;; checkdoc-params: (beg end)
   "Run restore_tide_db on raw .tcd bytes in the current buffer.
 This function is for use from `format-alist'.
 
@@ -172,18 +213,15 @@ URL `http://user42.tuxfamily.org/tcd-format/index.html'"
                               basename)))
 
                 (cond ((eq 0 status)
+                       ;; Success.
+
+                       ;; If no error messages then kill errors buffer and
+                       ;; window.  `delete-windows-on' needs arg before
+                       ;; emacs23.
                        (with-current-buffer tcd-format-errors-buffer
-                         ;; Kill buffer and window if no error messages.
-                         ;; `delete-windows-on' arg needed until emacs23.
-                         ;;
-                         ;; The errors are only in their own window if you
-                         ;; split or something explicitly, but however it
-                         ;; happens deleting is usually best.
-                         ;;
                          (when (= (point-min) (point-max))
                            (delete-windows-on (current-buffer))
                            (kill-buffer nil)))
-
                        (tcd-format--set-buffer-multibyte t)
 
                        ;; Fairly sure the .txt file is supposed to be
@@ -201,8 +239,10 @@ URL `http://user42.tuxfamily.org/tcd-format/index.html'"
                        (message nil))
 
                       (t
-                       (switch-to-buffer tcd-format-errors-buffer)
-                       (error "restore_tide_db error")))))
+                       ;; Error.
+                       (tcd-format-switch-to-buffer-other-window
+                        tcd-format-errors-buffer)
+                       (error "Error running restore_tide_db program")))))
 
           (condition-case nil (delete-file tcdfile) (error))
           (condition-case nil (delete-file txtfile) (error))
@@ -210,6 +250,8 @@ URL `http://user42.tuxfamily.org/tcd-format/index.html'"
           (delete-directory tmpdir))
 
         (point-max)))))
+
+;; LocalWords: XTide tcd db utils www flaterco tuxfamily org
 
 (provide 'tcd-format)
 
